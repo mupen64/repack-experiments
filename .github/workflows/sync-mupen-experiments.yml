@@ -6,7 +6,7 @@ on:
     - cron: "15 2 * * *"
 
 permissions:
-  contents: read
+  contents: write
   actions: read
 
 jobs:
@@ -76,6 +76,7 @@ jobs:
             core.info(`Artifacts selected: ${selected.length}`);
 
             core.setOutput('artifacts', JSON.stringify(selected));
+            core.setOutput('artifact_count', String(selected.length));
 
       - name: Delete folders under experiments
         run: |
@@ -84,7 +85,7 @@ jobs:
           find experiments -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
 
       - name: Download and extract artifacts
-        if: ${{ steps.collect.outputs.artifacts != '[]' }}
+        if: ${{ steps.collect.outputs.artifact_count != '0' }}
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_GH_TOKEN: ${{ secrets.MUPEN64_ARTIFACTS_TOKEN }}
@@ -92,7 +93,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "$ARTIFACTS_JSON" | jq -c '.[]' | while read -r item; do
+          downloaded=0
+          while read -r item; do
             branch="$(echo "$item" | jq -r '.branch')"
             artifact_id="$(echo "$item" | jq -r '.artifact_id')"
             target_dir="experiments/$branch"
@@ -143,8 +145,33 @@ jobs:
 
             unzip -oq "$tmp_zip" -d "$target_dir"
             rm -f "$tmp_zip"
-          done
+            downloaded=$((downloaded + 1))
+          done < <(echo "$ARTIFACTS_JSON" | jq -c '.[]')
 
-      - name: No artifacts found
-        if: ${{ steps.collect.outputs.artifacts == '[]' }}
+          echo "Downloaded and extracted $downloaded artifact(s)."
+
+      - name: Show extracted files
+        if: ${{ steps.collect.outputs.artifact_count != '0' }}
+        run: |
+          set -euo pipefail
+          find experiments -type f | sort || true
+
+      - name: Skip download when no matching artifacts
+        if: ${{ steps.collect.outputs.artifact_count == '0' }}
         run: echo "No maintainer PR artifacts found."
+
+      - name: Commit and push experiment updates
+        run: |
+          set -euo pipefail
+
+          if git diff --quiet -- experiments; then
+            echo "No changes in experiments to commit."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add experiments
+          git commit -m "chore: sync [skip ci]"
+          git push
