@@ -1,0 +1,114 @@
+name: Sync Mupen Experiments
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "15 2 * * *"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  sync-experiments:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Collect maintainer PR artifacts
+        id: collect
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const owner = 'mupen64';
+            const repo = 'mupen64-rr-lua';
+            const artifactName = 'mupen-release-nightly';
+            const maintainerAssociations = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+
+            const openPRs = await github.paginate(github.rest.pulls.list, {
+              owner,
+              repo,
+              state: 'open',
+              per_page: 100
+            });
+
+            const maintainerPRs = openPRs.filter((pr) =>
+              maintainerAssociations.has(pr.author_association)
+            );
+
+            const artifacts = await github.paginate(github.rest.actions.listArtifactsForRepo, {
+              owner,
+              repo,
+              name: artifactName,
+              per_page: 100
+            });
+
+            const selected = [];
+
+            for (const pr of maintainerPRs) {
+              const branch = pr.head.ref;
+              const headRepoId = pr.head.repo?.id;
+
+              const artifact = artifacts.find((a) =>
+                !a.expired &&
+                a.workflow_run &&
+                a.workflow_run.head_branch === branch &&
+                (headRepoId == null || a.workflow_run.head_repository_id === headRepoId)
+              );
+
+              if (!artifact) {
+                core.warning(`No '${artifactName}' artifact found for PR #${pr.number} (${branch}).`);
+                continue;
+              }
+
+              selected.push({
+                pr: pr.number,
+                branch,
+                artifact_id: artifact.id
+              });
+            }
+
+            core.info(`Open PRs: ${openPRs.length}`);
+            core.info(`Maintainer PRs: ${maintainerPRs.length}`);
+            core.info(`Artifacts selected: ${selected.length}`);
+
+            core.setOutput('artifacts', JSON.stringify(selected));
+
+      - name: Delete folders under experiments
+        run: |
+          set -euo pipefail
+          mkdir -p experiments
+          find experiments -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
+
+      - name: Download and extract artifacts
+        if: ${{ steps.collect.outputs.artifacts != '[]' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACTS_JSON: ${{ steps.collect.outputs.artifacts }}
+        run: |
+          set -euo pipefail
+
+          echo "$ARTIFACTS_JSON" | jq -c '.[]' | while read -r item; do
+            branch="$(echo "$item" | jq -r '.branch')"
+            artifact_id="$(echo "$item" | jq -r '.artifact_id')"
+            target_dir="experiments/$branch"
+            tmp_zip="$(mktemp)"
+
+            mkdir -p "$target_dir"
+            echo "Downloading artifact $artifact_id for branch '$branch'"
+
+            gh api \
+              --silent \
+              -H "Accept: application/vnd.github+json" \
+              "repos/mupen64/mupen64-rr-lua/actions/artifacts/$artifact_id/zip" > "$tmp_zip"
+
+            unzip -oq "$tmp_zip" -d "$target_dir"
+            rm -f "$tmp_zip"
+          done
+
+      - name: No artifacts found
+        if: ${{ steps.collect.outputs.artifacts == '[]' }}
+        run: echo "No maintainer PR artifacts found."
