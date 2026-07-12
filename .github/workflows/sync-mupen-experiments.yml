@@ -67,7 +67,8 @@ jobs:
               selected.push({
                 pr: pr.number,
                 branch,
-                artifact_id: artifact.id
+                artifact_id: artifact.id,
+                download_url: artifact.archive_download_url
               });
             }
 
@@ -94,16 +95,32 @@ jobs:
           echo "$ARTIFACTS_JSON" | jq -c '.[]' | while read -r item; do
             branch="$(echo "$item" | jq -r '.branch')"
             artifact_id="$(echo "$item" | jq -r '.artifact_id')"
+            download_url="$(echo "$item" | jq -r '.download_url')"
             target_dir="experiments/$branch"
             tmp_zip="$(mktemp)"
 
             mkdir -p "$target_dir"
             echo "Downloading artifact $artifact_id for branch '$branch'"
 
-            gh api \
-              --silent \
-              -H "Accept: application/vnd.github+json" \
-              "repos/mupen64/mupen64-rr-lua/actions/artifacts/$artifact_id/zip" > "$tmp_zip"
+            # Try anonymous download first (works for public repos), then retry with token.
+            if ! curl -fsSL \
+              -H "Accept: application/octet-stream" \
+              "$download_url" \
+              -o "$tmp_zip"; then
+              curl -fsSL \
+                -H "Accept: application/octet-stream" \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                "$download_url" \
+                -o "$tmp_zip"
+            fi
+
+            if ! unzip -tqq "$tmp_zip" >/dev/null 2>&1; then
+              echo "Downloaded payload for artifact $artifact_id is not a valid zip archive."
+              echo "First 200 bytes of payload:"
+              head -c 200 "$tmp_zip" || true
+              rm -f "$tmp_zip"
+              exit 1
+            fi
 
             unzip -oq "$tmp_zip" -d "$target_dir"
             rm -f "$tmp_zip"
