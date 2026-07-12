@@ -164,14 +164,26 @@ jobs:
         run: |
           set -euo pipefail
 
-          if git diff --quiet -- experiments; then
-            echo "No changes in experiments to commit."
+          changes="$(git status --porcelain=v1 --untracked-files=all -- experiments)"
+          if [ -z "$changes" ]; then
+            echo "No tracked or untracked changes in experiments to commit."
+            echo "Debug: files currently under experiments:"
+            find experiments -type f | sort || true
             exit 0
           fi
+
+          echo "Detected changes:"
+          echo "$changes"
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add experiments
+          git add -A experiments
+
+          if git diff --cached --quiet; then
+            echo "No staged changes after git add. Files may be ignored by .gitignore."
+            exit 0
+          fi
+
           git commit -m "chore: sync [skip ci]"
           git push
