@@ -67,8 +67,7 @@ jobs:
               selected.push({
                 pr: pr.number,
                 branch,
-                artifact_id: artifact.id,
-                download_url: artifact.archive_download_url
+                artifact_id: artifact.id
               });
             }
 
@@ -95,22 +94,24 @@ jobs:
           echo "$ARTIFACTS_JSON" | jq -c '.[]' | while read -r item; do
             branch="$(echo "$item" | jq -r '.branch')"
             artifact_id="$(echo "$item" | jq -r '.artifact_id')"
-            download_url="$(echo "$item" | jq -r '.download_url')"
             target_dir="experiments/$branch"
             tmp_zip="$(mktemp)"
+            api_url="https://api.github.com/repos/mupen64/mupen64-rr-lua/actions/artifacts/$artifact_id/zip"
 
             mkdir -p "$target_dir"
             echo "Downloading artifact $artifact_id for branch '$branch'"
 
-            # Try anonymous download first (works for public repos), then retry with token.
+            # Try anonymous download first (public repo), then retry with token.
             if ! curl -fsSL \
-              -H "Accept: application/octet-stream" \
-              "$download_url" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "$api_url" \
               -o "$tmp_zip"; then
               curl -fsSL \
-                -H "Accept: application/octet-stream" \
                 -H "Authorization: Bearer $GH_TOKEN" \
-                "$download_url" \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "$api_url" \
                 -o "$tmp_zip"
             fi
 
